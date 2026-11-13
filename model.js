@@ -35,6 +35,11 @@
     montee: 3,             // années de montée en charge des leviers
     nichesTotal: 88.3,     // PLF 2026, Voies et moyens
     nichesRendement: 0.5,  // gain net / coût brut d'une niche supprimée
+    // Aides aux entreprises hors dépenses fiscales (déjà dans les niches) et hors
+    // prêts et garanties Bpifrance. Commission d'enquête du Sénat, 2023, Md€.
+    allegementsTotal: 75,       // allègements de cotisations sociales
+    allegementsRendement: 0.5,  // gain net / montant, après emplois peu qualifiés perdus
+    subventionsTotal: 7,        // subventions de l'État
     ecartProductivite: 8.5, // Banque de France, % sous la tendance pré-Covid
     pibParPointSeniors: 0.2, // % de PIB par point de taux d'emploi 55-64 ans
     autonomie2022: 1.9,    // Ageing Report 2024, % du PIB
@@ -78,6 +83,31 @@
     cor: [[2024, -0.1], [2030, -0.2], [2070, -1.4]],
     // Risque climat sur la dette, points de PIB cumulés (France Stratégie, 2023).
     climat: [[2023, 0], [2030, 10], [2035, 15], [2040, 25]],
+    // Hausse du SMIC au-delà de la revalorisation légale : Md€ de 2026 par point,
+    // estimations de l'application (environ 3,1 millions de salariés au SMIC, DARES).
+    smic: {
+      netMensuel: 1440,      // € nets par mois en 2026, environ
+      recettesPoint: 0.35,   // cotisations salariales, CSG et impôts sur le surcroît de salaire
+      allegementsPoint: 0.6, // allègements de cotisations, calculés en fonction du SMIC
+      publicPoint: 0.2,      // agents publics rémunérés au niveau du SMIC
+      populationActive: 31,  // millions de personnes
+    },
+    // Revenu universel versé à chaque résident (population Insee 2025, millions).
+    // Aides non contributives absorbées, Md€ par an (ordres de grandeur DREES et CNAF) :
+    // part absorbée = min(1, montant du revenu universel / seuil) × plafond.
+    ru: {
+      adultes: 54.3,
+      mineurs: 14.3,
+      aides: [
+        { id: 'rsa', nom: 'RSA', montant: 12.0, seuil: 540, plafond: 1, base: 'adultes' },
+        { id: 'prime', nom: 'Prime d’activité', montant: 10.5, seuil: 190, plafond: 1, base: 'adultes' },
+        { id: 'aah', nom: 'AAH', montant: 13.5, seuil: 1030, plafond: 1, base: 'adultes' },
+        { id: 'aspa', nom: 'Minimum vieillesse', montant: 3.9, seuil: 465, plafond: 1, base: 'adultes' },
+        { id: 'autres', nom: 'ASS et autres minima', montant: 2.5, seuil: 550, plafond: 1, base: 'adultes' },
+        { id: 'logement', nom: 'Aides au logement', montant: 15.5, seuil: 225, plafond: 0.5, base: 'adultes' },
+        { id: 'famille', nom: 'Prestations familiales', montant: 33.0, seuil: 190, plafond: 0.8, base: 'mineurs' },
+      ],
+    },
   };
 
   const DEFAUTS = {
@@ -90,6 +120,8 @@
     prelevements: 0,   // variation du taux de recettes, points de PIB
     niches: 0,         // % des dépenses fiscales supprimées
     fraude: 0,         // recouvrement supplémentaire, Md€ de 2026 par an
+    allegements: 0,    // % des allègements de cotisations patronales supprimés
+    subventions: 0,    // % des subventions de l'État aux entreprises supprimées
     tva20: 20, tva10: 10, tva55: 5.5, tva21: 2.1, // taux de TVA, %
     ir11: 11, ir30: 30, ir41: 41, ir45: 45, // taux du barème, %
     irSurtaxe: 0,      // points ajoutés au-delà de irSeuil
@@ -108,6 +140,12 @@
     climat: 0,         // % du risque France Stratégie matérialisé
     crise: 0,          // coût budgétaire d'une crise, Md€
     anneeCrise: 2029,
+    smic: 0,           // hausse du SMIC au-delà de la revalorisation légale, %
+    smicEmplois: 15,   // milliers d'emplois perdus par point de hausse
+    ruAdulte: 0,       // revenu universel par adulte, € de 2026 par mois
+    ruMineur: 0,       // revenu universel par mineur, € de 2026 par mois
+    ruAides: 100,      // % des aides absorbables effectivement supprimées
+    ruFinancement: 0,  // % du coût net couvert par un prélèvement dédié
   };
 
   // Écart de croissance en volume de chaque poste par rapport au rythme général, points/an.
@@ -142,6 +180,30 @@
       .reduce((s, taux, i) => s + (taux - H.tva.taux[i]) * H.tva.parPoint[i], 0);
   }
 
+  // Effet à terme d'une hausse du SMIC, en Md€ de 2026 ; chômage en points.
+  function effetSmic(params) {
+    const p = { ...DEFAUTS, ...params };
+    const s = H.smic;
+    return {
+      recettes: (s.recettesPoint - s.allegementsPoint) * p.smic,
+      depenses: s.publicPoint * p.smic,
+      chomage: (p.smic * p.smicEmplois / 1000 / s.populationActive) * 100,
+    };
+  }
+
+  // Coût du revenu universel à terme, en Md€ de 2026 par an.
+  function effetRevenuUniversel(params) {
+    const p = { ...DEFAUTS, ...params };
+    const brut = (H.ru.adultes * p.ruAdulte + H.ru.mineurs * p.ruMineur) * 12 / 1000;
+    const parAide = H.ru.aides.map((a) => {
+      const verse = a.base === 'mineurs' ? p.ruMineur : p.ruAdulte;
+      return { ...a, absorbe: a.montant * a.plafond * Math.min(1, verse / a.seuil) * p.ruAides / 100 };
+    });
+    const aides = parAide.reduce((s, a) => s + a.absorbe, 0);
+    const net = brut - aides;
+    return { brut, aides, parAide, net, financement: Math.max(0, net) * p.ruFinancement / 100 };
+  }
+
   function simuler(params, base = BASE, horizon = 10) {
     const p = { ...DEFAUTS, ...params };
     const tauxRecettes = base.recettes / base.pib;
@@ -154,6 +216,8 @@
     const postes = H.postes.map((q) => (base.depensesPrimaires * q.montant) / TOTAL_POSTES);
     const impot = effetImpot(p);
     const tva = effetTVA(p);
+    const smic = effetSmic(p);
+    const ru = effetRevenuUniversel(p);
 
     for (let k = 1; k <= horizon; k++) {
       const annee = base.annee + k;
@@ -177,7 +241,7 @@
       const age = unAn(H.age, p.ageLegal);
       const duree = unAn(H.duree, p.dureeAssurance);
       const emploi = H.chomagePoint.map((v) =>
-        v * (H.chomageRef - p.chomage) * Math.min(1, k / H.monteeChomage));
+        v * (H.chomageRef - p.chomage - smic.chomage) * Math.min(1, k / H.monteeChomage));
       const pensions = H.sousIndexationPoint * p.sousIndexation * Math.min(k, p.anneesSousIndexation);
       const recetteEnPlus = age[1] + duree[1] + emploi[1] + H.cotisationPoint * p.cotisation * montee + tva;
 
@@ -196,12 +260,16 @@
       H.postes.forEach((q, i) => { parPoste[q.id] = postes[i]; });
       parPoste.retraites += pib * retraites / 100 - (age[0] + duree[0] + pensions) * echelle;
       parPoste.social += pib * autonomie / 100 - emploi[0] * echelle;
-      const nonVentile = pib * climat / 100 - p.economies * montee * echelle + coutCrise;
+      parPoste.economie -= H.subventionsTotal * p.subventions / 100 * montee * echelle;
+      parPoste.social += ru.net * montee * echelle;
+      const nonVentile = pib * climat / 100 + (smic.depenses - p.economies) * montee * echelle + coutCrise;
       const depensesPrimaires = Object.values(parPoste).reduce((s, v) => s + v, 0) + nonVentile;
 
       // Recettes
       const recettes = pib * (tauxRecettes + (p.prelevements / 100) * montee)
-        + ((H.nichesTotal * H.nichesRendement * p.niches / 100 + p.fraude + impot) * montee + recetteEnPlus) * echelle;
+        + ((H.nichesTotal * H.nichesRendement * p.niches / 100 + p.fraude + impot
+          + smic.recettes + ru.financement
+          + H.allegementsTotal * H.allegementsRendement * p.allegements / 100) * montee + recetteEnPlus) * echelle;
 
       // Intérêts : l'ancien encours est repris pour partie au taux de marché,
       // la dette nouvelle l'est en totalité.
@@ -253,5 +321,5 @@
     };
   }
 
-  return { COMPTES_2025, BASE, DEFAUTS, H, simuler, pointDeDepart, effetImpot, effetTVA };
+  return { COMPTES_2025, BASE, DEFAUTS, H, simuler, pointDeDepart, effetImpot, effetTVA, effetSmic, effetRevenuUniversel };
 });

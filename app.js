@@ -1,4 +1,4 @@
-const { BASE, DEFAUTS, H, COMPTES_2025, simuler, pointDeDepart, effetImpot, effetTVA } = DetteModel;
+const { BASE, DEFAUTS, H, COMPTES_2025, simuler, pointDeDepart, effetImpot, effetTVA, effetSmic, effetRevenuUniversel } = DetteModel;
 
 const nf = (d) => new Intl.NumberFormat('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const fmt = (v, d = 1) => nf(d).format(v);
@@ -21,7 +21,7 @@ const NOTES_POSTES = {
   enseignement: 'Du primaire au supérieur, dont 64 Md€ pour le secondaire et 42 Md€ pour le primaire.',
   sante: 'Hôpital, soins de ville, médicaments.',
   retraites: 'Pensions de vieillesse. Les curseurs du groupe « Retraites » s’y ajoutent.',
-  social: 'Chômage (49 Md€), famille, invalidité, logement, exclusion.',
+  social: 'Chômage (49 Md€), famille, invalidité, logement, exclusion. Le revenu universel, net des aides qu’il remplace, s’y ajoute.',
   securite: 'Police, gendarmerie, justice, prisons, pompiers.',
   economie: 'Transports, aides aux entreprises, énergie, agriculture.',
   general: 'Administration générale, contribution à l’UE, recherche fondamentale. Hors intérêts.',
@@ -71,6 +71,20 @@ const GROUPES = [
         repere: 'PLF 2026 : 88,3 Md€. Gain net retenu : la moitié du coût affiché.' },
       { id: 'fraude', nom: 'Fraude recouvrée en plus', min: 0, max: 20, pas: 0.5, f: (v) => '+' + fmt(v) + ' Md€/an',
         repere: 'Contrôle fiscal 2025 : 17,1 Md€ notifiés, 11,4 Md€ encaissés.' },
+    ],
+  },
+  {
+    titre: 'Aides aux entreprises',
+    intro: 'Sénat : 211 Md€ en 2023, dont 88 Md€ de dépenses fiscales (curseur « niches ») et 41 Md€ de prêts et garanties Bpifrance, non comptés ici. Le Haut-commissariat au Plan retient de 82 à 187 Md€ selon le périmètre.',
+    resume: (p) => {
+      const gain = H.allegementsTotal * H.allegementsRendement * p.allegements / 100 + H.subventionsTotal * p.subventions / 100;
+      return Math.abs(gain) < 0.05 ? 'Aides inchangées.' : `Effet à terme : ${signe(gain)} Md€ par an, en euros de 2026.`;
+    },
+    curseurs: [
+      { id: 'allegements', nom: 'Allègements de cotisations supprimés', min: 0, max: 100, pas: 5, f: (v) => fmt(v, 0) + ' %',
+        repere: `Sénat : ${fmt(H.allegementsTotal, 0)} Md€ en 2023, surtout sur les bas salaires. Gain net retenu : ${fmt(H.allegementsRendement * 100, 0)} %, le reste étant perdu en emplois.` },
+      { id: 'subventions', nom: 'Subventions de l’État supprimées', min: 0, max: 100, pas: 5, f: (v) => fmt(v, 0) + ' %',
+        repere: `Sénat : ${fmt(H.subventionsTotal, 0)} Md€ en 2023. Imputées au poste « Affaires économiques ».` },
     ],
   },
   {
@@ -147,6 +161,48 @@ const GROUPES = [
     ],
   },
   {
+    titre: 'SMIC',
+    intro: 'Hausse ajoutée à la revalorisation légale annuelle. Environ 3,1 millions de salariés sont au SMIC (DARES).',
+    resume: (p) => {
+      const s = effetSmic(p);
+      if (!p.smic) return 'SMIC revalorisé selon la règle légale.';
+      const solde = s.recettes - s.depenses - (H.chomagePoint[0] + H.chomagePoint[1]) * s.chomage;
+      return `Chômage ${points(s.chomage, 2)}. Effet à terme sur le solde : ${signe(solde)} Md€ par an, en euros de 2026.`;
+    },
+    curseurs: [
+      { id: 'smic', nom: 'Hausse du SMIC', min: 0, max: 25, pas: 1,
+        f: (v) => (v ? `+${v} % (≈ ${euros(H.smic.netMensuel * (1 + v / 100))} nets)` : 'aucune'),
+        repere: `Environ ${euros(H.smic.netMensuel)} nets par mois en 2026. Par point : +${fmt(H.smic.recettesPoint, 2)} Md€ de cotisations et d’impôts, −${fmt(H.smic.allegementsPoint)} Md€ d’allègements en plus, −${fmt(H.smic.publicPoint)} Md€ de salaires publics.` },
+      { id: 'smicEmplois', nom: 'Emplois perdus par point de hausse', min: 0, max: 40, pas: 1,
+        f: (v) => (v ? `${fmt(v * 1000, 0)} emplois` : 'aucun'),
+        repere: 'Hypothèse débattue : les estimations vont de presque rien à plusieurs dizaines de milliers d’emplois par point. Les emplois perdus passent par le levier « chômage ».',
+        actifSi: (p) => p.smic > 0 },
+    ],
+  },
+  {
+    titre: 'Revenu universel',
+    intro: 'Versé à chaque résident, sans condition. Il remplace les aides non contributives à hauteur de son montant ; retraites et allocations chômage ne sont pas touchées.',
+    resume: (p) => {
+      const r = effetRevenuUniversel(p);
+      if (r.brut < 0.05) return 'Aucun revenu universel.';
+      const pib = (v) => pct((v / BASE.pib) * 100);
+      return `Coût brut ${mds(r.brut)}, aides supprimées −${mds(r.aides)}, coût net ${mds(r.net)} par an (${pib(r.net)} du PIB)`
+        + (r.financement > 0.05 ? `, dont ${mds(r.financement)} couverts par le prélèvement dédié.` : '.');
+    },
+    curseurs: [
+      { id: 'ruAdulte', nom: 'Montant par adulte', min: 0, max: 1200, pas: 50, f: (v) => (v ? euros(v) + '/mois' : 'aucun'),
+        repere: `${fmt(H.ru.adultes)} millions d’adultes : 100 € par mois coûtent ${mds(H.ru.adultes * 1.2)} par an. Pour mémoire, RSA d’une personne seule : environ 650 €.` },
+      { id: 'ruMineur', nom: 'Montant par mineur', min: 0, max: 600, pas: 25, f: (v) => (v ? euros(v) + '/mois' : 'aucun'),
+        repere: `${fmt(H.ru.mineurs)} millions de mineurs, versé aux parents. Remplace les prestations familiales.` },
+      { id: 'ruAides', nom: 'Aides supprimées en contrepartie', min: 0, max: 100, pas: 5, f: (v) => fmt(v, 0) + ' % de l’absorbable',
+        repere: 'Une aide est supprimée en proportion du revenu universel rapporté à son montant moyen : RSA, prime d’activité, AAH, minimum vieillesse, ASS, la moitié des aides au logement, 80 % des prestations familiales.',
+        actifSi: (p) => p.ruAdulte > 0 || p.ruMineur > 0 },
+      { id: 'ruFinancement', nom: 'Part financée par un prélèvement dédié', min: 0, max: 100, pas: 5, f: (v) => fmt(v, 0) + ' %',
+        repere: 'Impôt proportionnel sur tous les revenus, par exemple. Calculé sans effet sur l’activité.',
+        actifSi: (p) => p.ruAdulte > 0 || p.ruMineur > 0 },
+    ],
+  },
+  {
     titre: 'Chocs',
     curseurs: [
       { id: 'climat', nom: 'Risque climat matérialisé', min: 0, max: 100, pas: 5, f: (v) => fmt(v, 0) + ' %',
@@ -173,6 +229,8 @@ const PREREGLAGES = [
     chomage: 6.2, seniors: 4,
   } },
   { nom: 'Taxer les hauts revenus', p: { ir41: 45, ir45: 50, irSurtaxe: 10, irSeuil: 500000, patrimoine: 2 } },
+  { nom: 'SMIC +10 %', p: { smic: 10 } },
+  { nom: 'Revenu universel', p: { ruAdulte: 600, ruMineur: 150, ruFinancement: 50 } },
   { nom: 'Crise en 2029', p: { crise: 300, anneeCrise: 2029 } },
 ];
 
@@ -374,7 +432,7 @@ function majPostes(t) {
   }).join('');
   const reste = fin.nonVentile;
   document.getElementById('postes').innerHTML = lignes + (Math.abs(reste) < 0.5 ? '' :
-    `<p class="note">Non ventilé (économies transversales, climat, crise) : ${signe(reste, 0)} Md€ en ${fin.annee}.</p>`);
+    `<p class="note">Non ventilé (économies transversales, SMIC des agents publics, climat, crise) : ${signe(reste, 0)} Md€ en ${fin.annee}.</p>`);
 }
 
 function majTableau(t) {
@@ -410,12 +468,15 @@ function construireTextes() {
     <ul>
       <li>${fmt(H.refinancement * 100)} % de l’encours est refinancé chaque année au taux de marché, et toute dette nouvelle l’est en totalité. Ce réglage reproduit les trois chiffres du Sénat à 15 % près.</li>
       <li>Supprimer une niche fiscale rapporte ${fmt(H.nichesRendement * 100, 0)} % de son coût affiché.</li>
+      <li>Supprimer des allègements de cotisations patronales rapporte ${fmt(H.allegementsRendement * 100, 0)} % de leur montant : le reste est perdu en emplois et en salaires. Les subventions supprimées sont des économies nettes.</li>
       <li>Un point de taux d’emploi des seniors ajoute ${fmt(H.pibParPointSeniors)} % au PIB.</li>
       <li>La dépense hors intérêts de 2026 est répartie entre postes selon leur poids de 2024 (Eurostat). L’objectif Otan de 3,5 % du PIB cité pour la défense ne vient pas des sources du site.</li>
       <li>Les rendements par point de chaque tranche de l’impôt sur le revenu sont des estimations de l’application, fiables à 30 % près : elles partent du nombre de foyers et de l’impôt moyen par tranche (DGFiP, revenus 2022) et des chiffrages cités par le Sénat. Le rendement de l’impôt plancher sur les patrimoines (10 Md€ bruts par point) vient du débat public de 2025, pas des sources du site.</li>
       <li>La TVA est calculée à consommation inchangée : une hausse ne réduit pas les achats et ne pèse pas sur la croissance, une baisse ne les stimule pas.</li>
       <li>Les effets de l’âge légal et de la durée de cotisation sont ceux de la Cour des comptes pour un an, étendus en proportion au-delà d’un an et atteints progressivement en 2035. Leur effet sur le PIB n’est compté que par les recettes.</li>
       <li>Un point de chômage en moins rapporte ${fmt(H.chomagePoint[0] + H.chomagePoint[1])} Md€ par an, en ${H.monteeChomage} ans, sans effet ajouté sur le PIB.</li>
+      <li>Les effets par point de hausse du SMIC (recettes, allègements, salaires publics) sont des estimations de l’application, fiables à 50 % près. Les emplois perdus sont convertis en chômage sur une population active de ${fmt(H.smic.populationActive, 0)} millions. L’effet sur la consommation et sur la prime d’activité n’est pas compté.</li>
+      <li>Le revenu universel est versé à toute la population et imputé au poste « Autre protection sociale ». Les montants des aides qu’il remplace (${mds(H.ru.aides.reduce((s, a) => s + a.montant, 0))} au total) sont des ordres de grandeur DREES et CNAF ; leur réduction suit le rapport entre le revenu universel et l’aide moyenne par foyer. Ni l’effet sur l’offre de travail, ni l’imposition du revenu universel ne sont modélisés.</li>
       <li>Les leviers budgétaires montent en charge sur ${H.montee} ans, puis suivent le PIB.</li>
       <li>Une crise réduit le PIB de 1 % par tranche de 100 Md€, dont la moitié est rattrapée l’année suivante.</li>
       <li>Le « tendanciel » maintient les dépenses hors intérêts au rythme de la croissance : ce n’est pas une prévision officielle.</li>

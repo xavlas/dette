@@ -68,6 +68,8 @@ test('sens des leviers', () => {
   assert.ok(fin({ prelevements: 1 }) < ref, 'prélèvements');
   assert.ok(fin({ niches: 20 }) < ref, 'niches');
   assert.ok(fin({ fraude: 5 }) < ref, 'fraude');
+  assert.ok(fin({ allegements: 20 }) < ref, 'allègements');
+  assert.ok(fin({ subventions: 50 }) < ref, 'subventions');
   assert.ok(fin({ retraites: 200 }) > ref, 'retraites');
   assert.ok(fin({ autonomie: 4.8 }) > ref, 'autonomie');
   assert.ok(fin({ seniors: 5 }) < ref, 'seniors');
@@ -191,6 +193,34 @@ test('nouvelle tranche : le rendement fond quand le seuil monte', () => {
   assert.ok(impot({ irSurtaxe: 10, irSeuil: 1000000 }) < impot({ irSurtaxe: 10, irSeuil: 500000 }));
 });
 
+// SMIC et revenu universel : hypothèses de l'application.
+const { effetSmic, effetRevenuUniversel } = require('../model.js');
+
+test('une hausse du SMIC dégrade le solde et accroît le chômage', () => {
+  const s = effetSmic({ smic: 10 });
+  proche(s.chomage, 10 * 15 / 1000 / 31 * 100, 1e-9);
+  assert.ok(gainSolde({ smic: 10 }, 2032) < 0);
+  assert.ok(gainSolde({ smic: 10, smicEmplois: 0 }, 2032) > gainSolde({ smic: 10 }, 2032));
+});
+
+test('revenu universel : coût brut, aides absorbées plafonnées', () => {
+  const r = effetRevenuUniversel({ ruAdulte: 100 });
+  proche(r.brut, 54.3 * 1.2, 1e-9);
+  const total = effetRevenuUniversel({ ruAdulte: 5000, ruMineur: 5000 });
+  const max = H.ru.aides.reduce((s, a) => s + a.montant * a.plafond, 0);
+  proche(total.aides, max, 1e-9);
+  proche(effetRevenuUniversel({ ruAdulte: 600, ruAides: 0 }).aides, 0, 1e-9);
+});
+
+test('revenu universel : alourdit la dette, sauf s’il est entièrement financé', () => {
+  const ref = simuler(DEFAUTS).at(-1);
+  const ru = simuler({ ...DEFAUTS, ruAdulte: 600, ruMineur: 150 }).at(-1);
+  assert.ok(ru.ratio > ref.ratio);
+  assert.ok(ru.postes.social > ref.postes.social);
+  const finance = simuler({ ...DEFAUTS, ruAdulte: 600, ruMineur: 150, ruFinancement: 100 }).at(-1);
+  proche(finance.soldePrimaire, ref.soldePrimaire, 1e-6);
+});
+
 test('impôt plancher sur les patrimoines : 20 Md€ bruts à 2 %, moins l’érosion', () => {
   proche(impot({ patrimoine: 2 }), 20, 1e-9);
   proche(impot({ patrimoine: 2, erosion: 50 }), 10, 1e-9);
@@ -225,4 +255,16 @@ test('TVA : un point sur tous les taux rapporte environ 11,4 Md€, dès la prem
   proche(effetTVA({ ...DEFAUTS, ...p }), 11.4, 0.15);
   proche(gainSolde(p, 2027), 11.5, 0.01);
   assert.ok(simuler({ ...DEFAUTS, ...p }).at(-1).ratio < simuler(DEFAUTS).at(-1).ratio);
+});
+
+// Aides aux entreprises : commission d'enquête du Sénat (2023), hors dépenses
+// fiscales et hors Bpifrance.
+test('aides aux entreprises : 37,5 Md€ nets pour tous les allègements, 7 Md€ de subventions', () => {
+  proche(gainSolde({ allegements: 100 }, 2029), 75 * 0.5, 0.01);
+  proche(gainSolde({ subventions: 100 }, 2029), 7, 0.01);
+  proche(gainSolde({ subventions: 100 }, 2027), 7 / 3, 0.01);
+  const ref = simuler(DEFAUTS).at(-1).postes;
+  const t = simuler({ ...DEFAUTS, subventions: 100 }).at(-1).postes;
+  assert.ok(t.economie < ref.economie, 'imputées aux affaires économiques');
+  proche(t.sante, ref.sante, 1e-9);
 });
